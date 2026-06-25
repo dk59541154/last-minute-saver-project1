@@ -45,3 +45,20 @@ export interface SavedScenario {
   panicLevel: "medium" | "high" | "apocalyptic";
   focusTimeMinutes: number;
 }
+
+export interface Habit {
+  id: string;
+  name: string;
+  emoji: string;
+  completed: boolean;
+  streak: number;
+}
+
+export interface LiveNotification {
+  id: string;
+  type: "warning" | "info" | "success" | "advice";
+  title: string;
+  message: string;
+  timestamp: string;
+}
+

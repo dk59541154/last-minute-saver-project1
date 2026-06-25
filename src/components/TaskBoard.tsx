@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from "react";
 import { Task, SavedScenario } from "../types";
-import { AlertTriangle, Clock, Plus, Trash2, CheckCircle, ShieldAlert, Sparkles } from "lucide-react";
+import { AlertTriangle, Clock, Plus, Trash2, CheckCircle, ShieldAlert, Sparkles, RefreshCw } from "lucide-react";
 
 interface TaskBoardProps {
   tasks: Task[];
@@ -112,6 +112,91 @@ export default function TaskBoard({
 
   const [countdowns, setCountdowns] = useState<Record<string, string>>({});
 
+  // AI Decompose Task State and Sync Setup
+  interface DecomposedTaskData {
+    microSteps: { id: string; text: string; completed: boolean }[];
+    unblockPhrase: string;
+  }
+
+  const [decomposedMap, setDecomposedMap] = useState<Record<string, DecomposedTaskData>>(() => {
+    const saved = localStorage.getItem("saver_decomposed_tasks");
+    if (saved) {
+      try { return JSON.parse(saved); } catch (e) { /* fallback */ }
+    }
+    return {};
+  });
+
+  const [decomposingTaskId, setDecomposingTaskId] = useState<string | null>(null);
+  const [decomposeError, setDecomposeError] = useState<string | null>(null);
+
+  useEffect(() => {
+    localStorage.setItem("saver_decomposed_tasks", JSON.stringify(decomposedMap));
+  }, [decomposedMap]);
+
+  const decomposeTaskWithAI = async (task: Task) => {
+    setDecomposingTaskId(task.id);
+    setDecomposeError(null);
+    try {
+      const response = await fetch("/api/decompose-task", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          taskTitle: task.title,
+          category: task.category,
+          notes: task.notes || ""
+        })
+      });
+
+      if (!response.ok) {
+        throw new Error("Could not contact the Anti-Procrastination model. Please retry.");
+      }
+
+      const data = await response.json();
+      const formattedSteps = (data.microSteps || []).map((step: string, idx: number) => ({
+        id: `${task.id}-step-${idx}`,
+        text: step,
+        completed: false
+      }));
+
+      setDecomposedMap(prev => ({
+        ...prev,
+        [task.id]: {
+          microSteps: formattedSteps,
+          unblockPhrase: data.unblockPhrase || "Let's tackle this task one small step at a time!"
+        }
+      }));
+    } catch (err: any) {
+      console.error(err);
+      setDecomposeError(err.message || "Failed to break down task.");
+    } finally {
+      setDecomposingTaskId(null);
+    }
+  };
+
+  const toggleMicroStep = (taskId: string, stepId: string) => {
+    setDecomposedMap(prev => {
+      const item = prev[taskId];
+      if (!item) return prev;
+
+      const updatedSteps = item.microSteps.map(step => 
+        step.id === stepId ? { ...step, completed: !step.completed } : step
+      );
+
+      const allDone = updatedSteps.every(s => s.completed);
+      if (allDone) {
+        setTasks(tasks.map((t) => (t.id === taskId ? { ...t, completed: true } : t)));
+      }
+
+      return {
+        ...prev,
+        [taskId]: {
+          ...item,
+          microSteps: updatedSteps
+        }
+      };
+    });
+  };
+
   useEffect(() => {
     const interval = setInterval(() => {
       const updated: Record<string, string> = {};
@@ -170,7 +255,21 @@ export default function TaskBoard({
   };
 
   const toggleTaskCompleted = (id: string) => {
+    const isNowCompleted = !tasks.find(t => t.id === id)?.completed;
     setTasks(tasks.map((t) => (t.id === id ? { ...t, completed: !t.completed } : t)));
+    
+    // Sync microsteps if decomposed
+    setDecomposedMap(prev => {
+      const item = prev[id];
+      if (!item) return prev;
+      return {
+        ...prev,
+        [id]: {
+          ...item,
+          microSteps: item.microSteps.map(step => ({ ...step, completed: isNowCompleted }))
+        }
+      };
+    });
   };
 
   const getUrgencyBadge = (urgency: Task["urgency"]) => {
@@ -424,7 +523,7 @@ export default function TaskBoard({
               {tasks.map((task) => (
                 <div
                   key={task.id}
-                  className={`p-4 rounded-xl border transition flex flex-col md:flex-row md:items-center justify-between gap-4 ${getUrgencyBorder(task.urgency)} ${
+                  className={`p-4 rounded-xl border transition flex flex-col md:flex-row md:items-start justify-between gap-4 ${getUrgencyBorder(task.urgency)} ${
                     task.completed
                       ? "bg-slate-50/50 border-slate-200 text-slate-400"
                       : "bg-white border-slate-200 hover:border-slate-300 text-slate-800"
@@ -459,10 +558,79 @@ export default function TaskBoard({
                           "{task.notes}"
                         </p>
                       )}
+
+                      {!task.completed && (
+                        <div className="pt-2 flex items-center gap-2">
+                          {!decomposedMap[task.id] ? (
+                            <button
+                              type="button"
+                              disabled={decomposingTaskId !== null}
+                              onClick={() => decomposeTaskWithAI(task)}
+                              className="text-[11px] font-bold text-indigo-600 hover:text-indigo-700 bg-indigo-50 hover:bg-indigo-100/80 border border-indigo-200/50 px-2.5 py-1.5 rounded-lg transition flex items-center gap-1 cursor-pointer"
+                            >
+                              {decomposingTaskId === task.id ? (
+                                <>
+                                  <RefreshCw className="w-3 h-3 animate-spin text-indigo-500" />
+                                  <span>Consulting Coach...</span>
+                                </>
+                              ) : (
+                                <>
+                                  <Sparkles className="w-3 h-3 text-indigo-500" />
+                                  <span>Break down (Gemini)</span>
+                                </>
+                              )}
+                            </button>
+                          ) : (
+                            <button
+                              type="button"
+                              onClick={() => {
+                                setDecomposedMap(prev => {
+                                  const next = { ...prev };
+                                  delete next[task.id];
+                                  return next;
+                                });
+                              }}
+                              className="text-[11px] font-bold text-slate-500 hover:text-slate-600 bg-slate-50 px-2.5 py-1.5 rounded-lg border border-slate-200 transition flex items-center gap-1 cursor-pointer"
+                            >
+                              <span>Hide micro-steps</span>
+                            </button>
+                          )}
+                        </div>
+                      )}
+
+                      {decomposedMap[task.id] && (
+                        <div className="mt-3 p-3 bg-slate-50 border border-slate-100 rounded-xl space-y-2 max-w-lg">
+                          <div className="flex items-start gap-1.5 text-slate-600">
+                            <span className="text-xs shrink-0 font-sans">💡</span>
+                            <p className="text-[11px] font-medium leading-relaxed italic text-indigo-800">
+                              "{decomposedMap[task.id].unblockPhrase}"
+                            </p>
+                          </div>
+
+                          <div className="space-y-1.5 pl-3 border-l-2 border-indigo-100">
+                            {decomposedMap[task.id].microSteps.map((step) => (
+                              <label
+                                key={step.id}
+                                className={`flex items-start gap-2 text-[11px] font-medium transition select-none cursor-pointer ${
+                                  step.completed ? "text-slate-400 line-through font-normal" : "text-slate-700 hover:text-slate-900"
+                                }`}
+                              >
+                                <input
+                                  type="checkbox"
+                                  checked={step.completed}
+                                  onChange={() => toggleMicroStep(task.id, step.id)}
+                                  className="mt-0.5 w-3.5 h-3.5 text-indigo-600 bg-white border-slate-300 rounded focus:ring-indigo-500 cursor-pointer"
+                                />
+                                <span className="leading-snug">{step.text}</span>
+                              </label>
+                            ))}
+                          </div>
+                        </div>
+                      )}
                     </div>
                   </div>
 
-                  <div className="flex items-center justify-between md:justify-end gap-6 border-t md:border-t-0 border-slate-100 pt-3 md:pt-0">
+                  <div className="flex items-center justify-between md:justify-end gap-6 border-t md:border-t-0 border-slate-100 pt-3 md:pt-0 shrink-0">
                     <div className="flex flex-col text-left md:text-right font-mono">
                       <span className="text-[10px] uppercase text-slate-400 tracking-wider font-bold">Hard Deadline</span>
                       <span className={`text-xs ${task.completed ? "text-slate-400" : "text-amber-600"} font-bold flex items-center gap-1 mt-0.5`}>

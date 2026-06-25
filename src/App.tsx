@@ -1,7 +1,11 @@
 import React, { useState, useEffect } from "react";
-import { Task, BattlePlan } from "./types";
+import { Task, BattlePlan, LiveNotification } from "./types";
 import TaskBoard from "./components/TaskBoard";
 import BattlePlanView from "./components/BattlePlanView";
+import VoiceAssistant from "./components/VoiceAssistant";
+import HabitTracker from "./components/HabitTracker";
+import AutonomousAgent from "./components/AutonomousAgent";
+import GeminiChatbot from "./components/GeminiChatbot";
 import { 
   initAuth, 
   googleSignIn, 
@@ -39,6 +43,7 @@ export default function App() {
   // Firebase Google Auth State
   const [user, setUser] = useState<User | null>(null);
   const [googleToken, setGoogleToken] = useState<string | null>(null);
+  const [authError, setAuthError] = useState<string | null>(null);
 
   // Voice Assistant Controls
   const [voiceEnabled, setVoiceEnabled] = useState<boolean>(true);
@@ -56,6 +61,7 @@ export default function App() {
       (currentUser, token) => {
         setUser(currentUser);
         setGoogleToken(token);
+        setAuthError(null);
       },
       () => {
         setUser(null);
@@ -66,6 +72,7 @@ export default function App() {
   }, []);
 
   const handleGoogleSignIn = async () => {
+    setAuthError(null);
     try {
       const res = await googleSignIn();
       if (res) {
@@ -74,7 +81,11 @@ export default function App() {
       }
     } catch (err: any) {
       console.error("Sign-In failed:", err);
-      alert("Google Sign-In failed: " + (err.message || err));
+      if (err.code === "auth/popup-closed-by-user" || err.message?.includes("popup-closed-by-user") || err.message?.includes("closed by user")) {
+        setAuthError("Sign-in popup was closed before completion. If you are using the embedded preview, please open the application in a new tab by clicking the external link icon in the top right to enable Google Calendar integrations.");
+      } else {
+        setAuthError("Google Sign-In failed: " + (err.message || err));
+      }
     }
   };
 
@@ -114,6 +125,70 @@ export default function App() {
     }
   }, [tasks]);
 
+  // Dynamic Context-Aware Reminders
+  const [reminders, setReminders] = useState<LiveNotification[]>([]);
+
+  useEffect(() => {
+    const alerts: LiveNotification[] = [];
+    const incompleteTasks = tasks.filter(t => !t.completed);
+
+    // 1. Apocalyptic urgency alert
+    const hasApocalyptic = incompleteTasks.some(t => t.urgency === 'apocalyptic');
+    if (hasApocalyptic) {
+      const urgentTask = incompleteTasks.find(t => t.urgency === 'apocalyptic')!;
+      alerts.push({
+        id: "alert-apoc",
+        type: "warning",
+        title: "☠️ APOCALYPTIC PRIORITY ALERT",
+        message: `"${urgentTask.title}" has extreme immediate deadline failure risk. Put down your phone, pick an objective, and start focusing now.`,
+        timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
+      });
+    }
+
+    // 2. High task volume alert
+    if (incompleteTasks.length >= 4) {
+      alerts.push({
+        id: "alert-vol",
+        type: "warning",
+        title: "⚠️ TASK OVERFLOW SATURATION",
+        message: `${incompleteTasks.length} urgent tasks in queue. Run 'Formulate Tactical Battle Plan' to optimize your ${focusTimeMinutes} focus minutes immediately.`,
+        timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
+      });
+    }
+
+    // 3. Focus flow low advice alert
+    if (focusFlow < 70) {
+      alerts.push({
+        id: "alert-flow",
+        type: "advice",
+        title: "🌬️ BREATHING MARGIN ADVISED",
+        message: "Your focus buffer is under strain. Complete active tasks or take a brief breathing break to reclaim clarity.",
+        timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
+      });
+    }
+
+    // 4. Default proactive info
+    if (incompleteTasks.length === 0) {
+      alerts.push({
+        id: "alert-clean",
+        type: "success",
+        title: "🛡️ SECURE COGNITIVE SHIELD",
+        message: "All tasks completed! All systems clean. Maintain focus hygiene by tracking daily habits or running a crisis scenario.",
+        timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
+      });
+    } else if (alerts.length === 0) {
+      alerts.push({
+        id: "alert-active",
+        type: "info",
+        title: "💡 CONTEXT-AWARE REMINDER",
+        message: `You have ${incompleteTasks.length} active target objectives. Zero in on the highest priority target first.`,
+        timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
+      });
+    }
+
+    setReminders(alerts);
+  }, [tasks, focusTimeMinutes, focusFlow]);
+
   const handleGeneratePlan = async () => {
     if (tasks.length === 0) return;
     setLoading(true);
@@ -145,6 +220,38 @@ export default function App() {
     }
   };
 
+  const fallbackSpeechSynthesis = (textToSpeak: string) => {
+    if ("speechSynthesis" in window) {
+      try {
+        window.speechSynthesis.cancel(); // Clear any existing queues first
+        const utterance = new SpeechSynthesisUtterance(textToSpeak);
+        utterance.rate = 1.05; // Quick pace for tactical coach feel
+        utterance.pitch = 1.0;
+        
+        utterance.onend = () => {
+          setPlayingAudio(null);
+          setCurrentSpeechText("");
+        };
+        utterance.onerror = () => {
+          setPlayingAudio(null);
+          setCurrentSpeechText("");
+        };
+        
+        window.speechSynthesis.speak(utterance);
+        setPlayingAudio({
+          pause: () => window.speechSynthesis.cancel()
+        } as any);
+      } catch (speechErr) {
+        console.error("Browser speech synthesis execution failed:", speechErr);
+        setPlayingAudio(null);
+        setCurrentSpeechText("");
+      }
+    } else {
+      setPlayingAudio(null);
+      setCurrentSpeechText("");
+    }
+  };
+
   const speakCoachingTip = async (text: string) => {
     if (!voiceEnabled) return;
     
@@ -168,16 +275,30 @@ export default function App() {
       const data = await response.json();
       if (data.audio) {
         const audioUrl = `data:audio/mp3;base64,${data.audio}`;
-        const audio = new Audio(audioUrl);
-        setPlayingAudio(audio);
-        audio.play();
-        audio.onended = () => {
-          setPlayingAudio(null);
-          setCurrentSpeechText("");
+        const audio = new Audio();
+        
+        audio.onerror = (e) => {
+          console.warn("Audio element failed to load source, falling back to browser speech synthesis:", e);
+          fallbackSpeechSynthesis(text);
         };
+
+        audio.src = audioUrl;
+        setPlayingAudio(audio);
+        audio.play().then(() => {
+          audio.onended = () => {
+            setPlayingAudio(null);
+            setCurrentSpeechText("");
+          };
+        }).catch((playErr) => {
+          console.warn("Audio play was prevented or failed, falling back to browser speech synthesis:", playErr);
+          fallbackSpeechSynthesis(text);
+        });
+      } else {
+        throw new Error("No audio in API response");
       }
     } catch (err) {
-      console.error("Voice TTS integration failed:", err);
+      console.error("Voice TTS integration failed, falling back to browser speech synthesis:", err);
+      fallbackSpeechSynthesis(text);
     } finally {
       setVoiceLoading(false);
     }
@@ -190,6 +311,41 @@ export default function App() {
     }
     setPlan(null);
     setCurrentSpeechText("");
+  };
+
+  const handleAddTaskByVoice = (taskData: {
+    title: string;
+    category: Task["category"];
+    urgency: Task["urgency"];
+    deadlineHours: number;
+    notes?: string;
+  }) => {
+    const newTask: Task = {
+      id: "t-" + Date.now(),
+      title: taskData.title,
+      category: taskData.category,
+      urgency: taskData.urgency,
+      deadline: new Date(Date.now() + taskData.deadlineHours * 60 * 60 * 1000).toISOString(),
+      notes: taskData.notes,
+      completed: false
+    };
+    setTasks(prev => [...prev, newTask]);
+  };
+
+  const handleCompleteTask = (id: string) => {
+    setTasks(prev => prev.map(t => t.id === id ? { ...t, completed: true } : t));
+  };
+
+  const handleRemoveTaskByVoice = (taskId: string) => {
+    setTasks(prev => prev.filter(t => t.id !== taskId));
+  };
+
+  const handleChangeSettingsByVoice = (settings: {
+    panicLevel?: "medium" | "high" | "apocalyptic";
+    focusTimeMinutes?: number;
+  }) => {
+    if (settings.panicLevel) setPanicLevel(settings.panicLevel);
+    if (settings.focusTimeMinutes) setFocusTimeMinutes(settings.focusTimeMinutes);
   };
 
   return (
@@ -225,15 +381,33 @@ export default function App() {
               </button>
             </div>
           ) : (
-            <button
-              onClick={handleGoogleSignIn}
-              className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg border text-xs font-semibold bg-white border-slate-200 hover:border-blue-500 hover:text-blue-600 text-slate-600 transition"
-              title="Connect real Google Calendar to schedule task blocks automatically"
-            >
-              <Calendar className="w-3.5 h-3.5 text-blue-600" />
-              <span className="hidden sm:inline">Connect Calendar</span>
-              <span className="inline sm:hidden">Connect</span>
-            </button>
+            <div className="flex items-center gap-1.5">
+              <button
+                onClick={handleGoogleSignIn}
+                className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg border text-xs font-semibold bg-white border-slate-200 hover:border-blue-500 hover:text-blue-600 text-slate-600 transition"
+                title="Connect real Google Calendar to schedule task blocks automatically"
+              >
+                <Calendar className="w-3.5 h-3.5 text-blue-600" />
+                <span className="hidden sm:inline">Connect Calendar</span>
+                <span className="inline sm:hidden">Connect</span>
+              </button>
+              <button
+                onClick={() => {
+                  setUser({
+                    uid: "mock-user-123",
+                    email: "demo-user@lastminutelifesaver.ai",
+                    displayName: "Demo User",
+                    photoURL: "https://lh3.googleusercontent.com/a/default-user"
+                  } as any);
+                  setGoogleToken("mock-access-token-123");
+                  setAuthError(null);
+                }}
+                className="hidden md:inline-flex items-center justify-center px-2.5 py-1.5 rounded-lg border text-xs font-semibold bg-slate-50 border-slate-200 text-slate-500 hover:bg-slate-100 hover:text-slate-700 transition cursor-pointer"
+                title="Use simulated Demo Mode to test calendar integrations inside the sandbox"
+              >
+                Demo Mode
+              </button>
+            </div>
           )}
 
           {/* Audio toggle */}
@@ -265,11 +439,91 @@ export default function App() {
         </div>
       </header>
 
+      {authError && (
+        <div className="bg-amber-50 border-b border-amber-200 px-6 py-4 flex items-start gap-3 text-amber-800 text-xs">
+          <AlertTriangle className="w-4 h-4 text-amber-600 shrink-0 mt-0.5" />
+          <div className="flex-1 space-y-2">
+            <div>
+              <span className="font-bold block mb-0.5">Google Calendar Connection Note</span>
+              <p className="leading-relaxed">{authError}</p>
+            </div>
+            <div className="flex gap-2">
+              <button
+                type="button"
+                onClick={() => {
+                  setUser({
+                    uid: "mock-user-123",
+                    email: "demo-user@lastminutelifesaver.ai",
+                    displayName: "Demo User",
+                    photoURL: "https://lh3.googleusercontent.com/a/default-user"
+                  } as any);
+                  setGoogleToken("mock-access-token-123");
+                  setAuthError(null);
+                }}
+                className="bg-amber-600 hover:bg-amber-700 text-white font-bold px-3 py-1.5 rounded-lg transition text-xs shrink-0 cursor-pointer"
+              >
+                Simulate Demo Connection (Skip Auth)
+              </button>
+            </div>
+          </div>
+          <button 
+            type="button"
+            onClick={() => setAuthError(null)}
+            className="text-amber-500 hover:text-amber-700 font-bold px-2 py-1 rounded hover:bg-amber-100 transition shrink-0"
+          >
+            Dismiss
+          </button>
+        </div>
+      )}
+
       {/* Main Body */}
       <main className="flex-1 max-w-7xl w-full mx-auto p-4 md:p-6 lg:p-8 flex flex-col lg:flex-row gap-6">
         
         {/* Left column / Left Sidebar (Habits & Proactive Stats) */}
         <aside className="w-full lg:w-72 flex flex-col gap-6 shrink-0 order-2 lg:order-1">
+          {/* Voice AI Assistant */}
+          <VoiceAssistant
+            tasks={tasks}
+            panicLevel={panicLevel}
+            focusTimeMinutes={focusTimeMinutes}
+            onAddTaskByVoice={handleAddTaskByVoice}
+            onRemoveTaskByVoice={handleRemoveTaskByVoice}
+            onGeneratePlan={handleGeneratePlan}
+            onChangeSettingsByVoice={handleChangeSettingsByVoice}
+            speakCoachingTip={speakCoachingTip}
+            voiceEnabled={voiceEnabled}
+          />
+
+          {/* Gemini Chatbot - Slayer Procrastination Coach */}
+          <GeminiChatbot />
+
+          {/* Context-Aware Reminders Widget */}
+          <div className="p-5 bg-white rounded-2xl border border-slate-200 shadow-sm space-y-4">
+            <h2 className="text-xs font-bold text-slate-400 uppercase tracking-[0.2em]">Context-Aware Alerts</h2>
+            <div className="space-y-3">
+              {reminders.map((alert) => (
+                <div 
+                  key={alert.id} 
+                  className={`p-3 rounded-xl border text-xs leading-relaxed space-y-1 ${
+                    alert.type === "warning" 
+                      ? "bg-red-50/50 border-red-200 text-red-800 animate-pulse"
+                      : alert.type === "advice"
+                      ? "bg-amber-50/50 border-amber-200 text-amber-800"
+                      : alert.type === "success"
+                      ? "bg-emerald-50/50 border-emerald-200 text-emerald-800"
+                      : "bg-blue-50/50 border-blue-200 text-blue-800"
+                  }`}
+                >
+                  <div className="flex justify-between items-center font-bold text-[10px] tracking-wide uppercase">
+                    <span>{alert.title}</span>
+                    <span className="opacity-60 text-[9px] font-mono">{alert.timestamp}</span>
+                  </div>
+                  <p className="text-slate-600 font-medium">{alert.message}</p>
+                </div>
+              ))}
+            </div>
+          </div>
+
           {/* Active Status Display */}
           <div className="p-5 bg-white rounded-2xl border border-slate-200 shadow-sm space-y-4">
             <h2 className="text-xs font-bold text-slate-400 uppercase tracking-[0.2em]">Live Context</h2>
@@ -351,6 +605,9 @@ export default function App() {
             </div>
           </div>
 
+          {/* Goal & Habit Tracker */}
+          <HabitTracker tasks={tasks} />
+
           {/* Autonomous Status */}
           <div className="p-4 bg-slate-100 rounded-2xl border border-slate-200 text-center shadow-inner">
             <span className="text-[10px] font-bold text-slate-500 uppercase tracking-wider block">
@@ -414,6 +671,19 @@ export default function App() {
                 user={user}
                 googleToken={googleToken}
                 onGoogleSignIn={handleGoogleSignIn}
+              />
+            </div>
+          )}
+
+          {tasks.length > 0 && (
+            <div className="mt-6 animate-[fadeIn_0.3s_ease]">
+              <AutonomousAgent
+                activeTask={tasks.find(t => !t.completed) || null}
+                tasks={tasks}
+                panicLevel={panicLevel}
+                onCompleteTask={handleCompleteTask}
+                speakCoachingTip={speakCoachingTip}
+                voiceEnabled={voiceEnabled}
               />
             </div>
           )}

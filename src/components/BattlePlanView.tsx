@@ -47,11 +47,114 @@ export default function BattlePlanView({
   const [syncSuccess, setSyncSuccess] = useState<boolean>(false);
   const [syncError, setSyncError] = useState<string | null>(null);
 
+  // Google Calendar Conflict Detection states
+  const [checkingConflicts, setCheckingConflicts] = useState<boolean>(false);
+  const [calendarConflicts, setCalendarConflicts] = useState<any[]>([]);
+
+  const checkTodayCalendarConflicts = async () => {
+    if (!googleToken) return;
+    setCheckingConflicts(true);
+    setCalendarConflicts([]);
+
+    if (googleToken === "mock-access-token-123") {
+      try {
+        await new Promise(resolve => setTimeout(resolve, 1000));
+        setCalendarConflicts([
+          {
+            title: "Urgent: Team Alignment sync (Decline recommended)",
+            start: new Date(Date.now() + 30 * 60000).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+            end: new Date(Date.now() + 60 * 60000).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+            link: "#"
+          },
+          {
+            title: "Quick Sync: Sync status dashboard check-in",
+            start: new Date(Date.now() + 120 * 60000).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+            end: new Date(Date.now() + 150 * 60000).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+            link: "#"
+          }
+        ]);
+      } catch (err) {
+        console.error("Mock conflict check error:", err);
+      } finally {
+        setCheckingConflicts(false);
+      }
+      return;
+    }
+
+    try {
+      // Fetch today's events (from 00:00 to 23:59)
+      const startOfDay = new Date();
+      startOfDay.setHours(0, 0, 0, 0);
+      const endOfDay = new Date();
+      endOfDay.setHours(23, 59, 59, 999);
+
+      const url = `https://www.googleapis.com/calendar/v3/calendars/primary/events?timeMin=${startOfDay.toISOString()}&timeMax=${endOfDay.toISOString()}&singleEvents=true&orderBy=startTime`;
+      const response = await fetch(url, {
+        headers: { "Authorization": `Bearer ${googleToken}` }
+      });
+
+      if (!response.ok) {
+        throw new Error("Could not fetch calendar events.");
+      }
+
+      const data = await response.json();
+      const events = data.items || [];
+      const conflictsList: any[] = [];
+
+      // Check if any event falls in today's active timeslots
+      events.forEach((event: any) => {
+        const evStartStr = event.start?.dateTime || event.start?.date;
+        const evEndStr = event.end?.dateTime || event.end?.date;
+        if (!evStartStr || !evEndStr) return;
+
+        const evStart = new Date(evStartStr).getTime();
+        const evEnd = new Date(evEndStr).getTime();
+        const now = Date.now();
+
+        // Check if event is relevant for today (ending in the future or active today)
+        if (evEnd > now) {
+          conflictsList.push({
+            title: event.summary || "Untitled Event",
+            start: new Date(evStartStr).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+            end: new Date(evEndStr).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+            link: event.htmlLink
+          });
+        }
+      });
+
+      setCalendarConflicts(conflictsList);
+    } catch (err) {
+      console.error("Conflict checking failed:", err);
+    } finally {
+      setCheckingConflicts(false);
+    }
+  };
+
+  // Run automatically when Google Calendar is connected
+  useEffect(() => {
+    if (googleToken && timeline.length > 0) {
+      checkTodayCalendarConflicts();
+    }
+  }, [googleToken, timeline]);
+
+
   const pushToGoogleCalendar = async () => {
     if (!googleToken) return;
     setSyncing(true);
     setSyncError(null);
     setSyncSuccess(false);
+
+    if (googleToken === "mock-access-token-123") {
+      try {
+        await new Promise(resolve => setTimeout(resolve, 1500));
+        setSyncSuccess(true);
+      } catch (err: any) {
+        setSyncError(err.message || "Failed mock calendar sync.");
+      } finally {
+        setSyncing(false);
+      }
+      return;
+    }
 
     try {
       let currentStart = new Date();
@@ -285,6 +388,35 @@ export default function BattlePlanView({
               </div>
             )}
           </div>
+
+          {/* Calendar Conflicts Section */}
+          {user && (checkingConflicts || calendarConflicts.length > 0) && (
+            <div className="p-4 bg-amber-50/50 border border-amber-200 rounded-xl space-y-2">
+              <span className="text-xs font-bold text-amber-800 flex items-center gap-1.5 uppercase">
+                <AlertTriangle className="w-4 h-4 text-amber-600 animate-pulse" />
+                Live Google Calendar Conflict Warnings
+              </span>
+              {checkingConflicts ? (
+                <p className="text-xs text-amber-600 animate-pulse font-medium">Scanning your Google Calendar for today's commitments...</p>
+              ) : (
+                <div className="space-y-2">
+                  <p className="text-xs text-amber-700 leading-relaxed">
+                    We scanned your connected calendar and found <strong>{calendarConflicts.length} event(s)</strong> that might clash with your execution focus today. Make sure to close your email and decline non-critical meetings:
+                  </p>
+                  <div className="space-y-1.5 max-h-24 overflow-y-auto">
+                    {calendarConflicts.map((conf, cIdx) => (
+                      <div key={cIdx} className="bg-white border border-amber-100 p-2 rounded-lg text-[11px] text-amber-900 flex justify-between items-center gap-2">
+                        <span className="font-semibold truncate flex-1">{conf.title}</span>
+                        <span className="font-mono text-[10px] text-amber-600 font-bold bg-amber-50 px-1.5 py-0.5 rounded border border-amber-100 shrink-0">
+                          {conf.start} - {conf.end}
+                        </span>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
+            </div>
+          )}
 
           <div className="space-y-4">
             {timeline.map((slot, idx) => {

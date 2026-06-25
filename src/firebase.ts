@@ -15,7 +15,6 @@ export const auth = getAuth(app);
 
 const provider = new GoogleAuthProvider();
 // Request Calendar scopes
-provider.addScope("https://www.googleapis.com/auth/calendar font-semibold");
 provider.addScope("https://www.googleapis.com/auth/calendar");
 provider.addScope("https://www.googleapis.com/auth/calendar.events");
 
